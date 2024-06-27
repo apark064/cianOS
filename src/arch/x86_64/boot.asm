@@ -1,167 +1,111 @@
-global start
-extern long_mode_start
+; boot.asm - x86-64 Bootloader with Long Mode and Paging
+
+section .multiboot2_header
+header_start:
+    dd 0xe85250d6                ; magic number (multiboot 2)
+    dd 0                         ; architecture 0 (protected mode i386)
+    dd header_end - header_start ; header length
+    dd -(0xe85250d6 + 0 + (header_end - header_start)) ; checksum
+
+    ; insert optional multiboot tags here
+
+    ; required end tag
+    dd 0    ; tag type: end tag
+    dd 8    ; size of this tage (8 bytes)
+header_end:
 
 section .text
 bits 32
+global start
+extern kernel_main
+ 
 start:
-    mov esp, stack_top
-    ; print `OK` to screen
-    ; mov dword [0xb8000], 0x2f4b2f4f
-    call check_multiboot
-    call check_cpuid
-    call check_long_mode
-    
-    call set_up_page_tables 
-    call enable_paging     
+    cli                     ; Clear interrupts
+    ; Check for long mode support
+    mov eax, 0x80000001
+    cpuid
+    test edx, 1 << 29       ; Check if LM (Long Mode) bit is set
+    jz no_long_mode         ; Jump if long mode is not supported
 
-    ; load the 64-bit GDT
-    lgdt [gdt64.pointer]
-
-    jmp gdt64.code:long_mode_start
-
-    ; print `OK` to screen
-    mov dword [0xb8000], 0x2f4b2f4f
-
-    hlt
-
-; Prints `ERR: ` and the given error code to screen and hangs.
-; parameter: error code (in ascii) in al
-error:
-    mov dword [0xb8000], 0x4f524f45
-    mov dword [0xb8004], 0x4f3a4f52
-    mov dword [0xb8008], 0x4f204f20
-    mov byte  [0xb800a], al
-    hlt
-
-check_multiboot:
-    cmp eax, 0x36d76289
-    jne .no_multiboot
-    ret
-.no_multiboot:
-    mov al, "0"
-    jmp error
-
-check_cpuid:
-    ; Check if CPUID is supported by attempting to flip the ID bit (bit 21)
-    ; in the FLAGS register. If we can flip it, CPUID is available.
-
-    ; Copy FLAGS in to EAX via stack
-    pushfd
-    pop eax
-
-    ; Copy to ECX as well for comparing later on
-    mov ecx, eax
-
-    ; Flip the ID bit
-    xor eax, 1 << 21
-
-    ; Copy EAX to FLAGS via the stack
-    push eax
-    popfd
-
-    ; Copy FLAGS back to EAX (with the flipped bit if CPUID is supported)
-    pushfd
-    pop eax
-
-    ; Restore FLAGS from the old version stored in ECX (i.e. flipping the
-    ; ID bit back if it was ever flipped).
-    push ecx
-    popfd
-
-    ; Compare EAX and ECX. If they are equal then that means the bit
-    ; wasn't flipped, and CPUID isn't supported.
-    cmp eax, ecx
-    je .no_cpuid
-    ret
-.no_cpuid:
-    mov al, "1"
-    jmp error
-
-check_long_mode:
-    ; test if extended processor info in available
-    mov eax, 0x80000000    ; implicit argument for cpuid
-    cpuid                  ; get highest supported argument
-    cmp eax, 0x80000001    ; it needs to be at least 0x80000001
-    jb .no_long_mode       ; if it's less, the CPU is too old for long mode
-
-    ; use extended info to test if long mode is available
-    mov eax, 0x80000001    ; argument for extended processor info
-    cpuid                  ; returns various feature bits in ecx and edx
-    test edx, 1 << 29      ; test if the LM-bit is set in the D-register
-    jz .no_long_mode       ; If it's not set, there is no long mode
-    ret
-.no_long_mode:
-    mov al, "2"
-    jmp error
-
-set_up_page_tables:
-    ; map first P4 entry to P3 table
-    mov eax, p3_table
-    or eax, 0b11 ; present + writable
-    mov [p4_table], eax
-
-    ; map first P3 entry to P2 table
-    mov eax, p2_table
-    or eax, 0b11 ; present + writable
-    mov [p3_table], eax
-
-    ; TODO map each P2 entry to a huge 2MiB page
-    mov ecx, 0
-    call .map_p2_table 
-    ret
-.map_p2_table:
-    ; map ecx-th P2 entry to a huge page that starts at address 2MiB*ecx
-    mov eax, 0x200000  ; 2MiB
-    mul ecx            ; start address of ecx-th page
-    or eax, 0b10000011 ; present + writable + huge
-    mov [p2_table + ecx * 8], eax ; map ecx-th entry
-
-    inc ecx            ; increase counter
-    cmp ecx, 512       ; if counter == 512, the whole P2 table is mapped
-    jne .map_p2_table  ; else map the next entry
-
-    ret
-
-enable_paging:
-    ; load P4 to cr3 register (cpu uses this to access the P4 table)
-    mov eax, p4_table
-    mov cr3, eax
-
-    ; enable PAE-flag in cr4 (Physical Address Extension)
-    mov eax, cr4
-    or eax, 1 << 5
-    mov cr4, eax
-
-    ; set the long mode bit in the EFER MSR (model specific register)
-    mov ecx, 0xC0000080
-    rdmsr
-    or eax, 1 << 8
-    wrmsr
-
-    ; enable paging in the cr0 register
+    ; Enable protected mode
     mov eax, cr0
-    or eax, 1 << 31
+    or eax, 0x1             ; Set PE bit (Protection Enable)
     mov cr0, eax
 
-    ret
+    ; Load GDT
+    lgdt [gdt_descriptor]
 
-section .rodata
-gdt64:
-    dq 0 ; zero entry
-.code: equ $ - gdt64 ; new
-    dq (1<<43) | (1<<44) | (1<<47) | (1<<53) ; code segment
-.pointer:
-    dw $ - gdt64 - 1
-    dq gdt64
+    ; Enable paging
+    mov eax, cr4
+    or eax, 0x20            ; Set PAE bit (Physical Address Extension)
+    mov cr4, eax
+
+    ; Load PML4 table address into CR3
+    mov eax, pml4_table
+    mov cr3, eax
+
+    ; Enable long mode
+    mov ecx, 0xC0000080     ; Load EFER MSR
+    rdmsr
+    or eax, 0x100           ; Set LME bit (Long Mode Enable)
+    wrmsr
+ 
+    ; Enable paging
+    mov eax, cr0
+    or eax, 0x80000000      ; Set PG bit (Paging)
+    mov cr0, eax
+ 
+    ; Far jump to 64-bit code segment
+    jmp 0x08:long_mode_start
+
+no_long_mode:
+    ; Handle the case where long mode is not supported
+    mov al, "2"
+    hlt
+
+
+section .data
+align 4096
+pml4_table:
+    dq 0x0000000000000003   ; PML4 entry pointing to itself
+ 
 
 section .bss
-align 4096
-p4_table:
-    resb 4096
-p3_table:
-    resb 4096
-p2_table:
-    resb 4096
+
+section .text
+bits 64
+long_mode_start:
+    ; Reload all data segment registers with null
+    mov ax, 0x10
+    mov ss, ax
+    mov ds, ax
+    mov es, ax
+    mov fs, ax
+    mov gs, ax
+
+    ; Set up stack
+    mov rsp, stack_top
+ 
+    ; Call kernel main function
+    call kernel_main
+
+    ; Halt the CPU
+    hlt
+
+section .data
+gdt:
+    dq 0x0000000000000000   ; Null descriptor
+    dq 0x00AF9A000000FFFF   ; Code segment descriptor
+    dq 0x00AF92000000FFFF   ; Data segment descriptor
+
+gdt_descriptor:
+    dw gdt_end - gdt - 1    ; Limit
+    dd gdt                  ; Base
+gdt_end:
+
+
+section .bss
+align 16
 stack_bottom:
-    resb 64
+    resb 4096               ; 4KB stack
 stack_top:
