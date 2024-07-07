@@ -28,11 +28,12 @@ clean:
 	@rm -rf build
 
 run: $(iso)
-	@qemu-system-x86_64 -cdrom $(iso)
+	qemu-system-x86_64 -cdrom $(iso)
 
 iso: $(iso)
 
 $(iso): $(kernel) $(grub_cfg)
+
 	@mkdir -p build/isofiles/boot/grub
 	@cp $(kernel) build/isofiles/boot/kernel.bin
 	@cp $(grub_cfg) build/isofiles/boot/grub
