@@ -1,13 +1,16 @@
 arch ?= x86_64
 kernel := build/kernel-$(arch).bin
 iso := build/os-$(arch).iso
+CC = gcc
+LD = ld
+CFLAGS = -m64 -ffreestanding -O2 -Wall -Wextra -nostdlib
 
 linker_script := src/arch/$(arch)/linker.ld
 grub_cfg := src/arch/$(arch)/grub.cfg
 
 assembly_source_files := $(wildcard src/arch/$(arch)/*.asm)
 assembly_object_files := $(patsubst src/arch/$(arch)/%.asm, \
-        build/arch/$(arch)/%.o, $(assembly_source_files))
+	build/arch/$(arch)/%.o, $(assembly_source_files))
 
 c_source_files := $(wildcard src/arch/$(arch)/*.c)
 c_object_files := $(patsubst src/arch/$(arch)/%.c, \
@@ -15,8 +18,9 @@ c_object_files := $(patsubst src/arch/$(arch)/%.c, \
 
 all_object_files := $(assembly_object_files) $(c_object_files)
 
+.PHONY: all clean run iso lazy
 
-.PHONY: all clean run iso
+lazy: clean all run
 
 all: $(kernel)
 
@@ -38,13 +42,12 @@ $(iso): $(kernel) $(grub_cfg)
 $(kernel): $(all_object_files) $(linker_script)
 	@ld -n -T $(linker_script) -o $(kernel) $(all_object_files)
 
-# Compile C source files
-build/arch/$(arch)/%.o: src/arch/$(arch)/%.c
-	@mkdir -p $(shell dirname $@)
-	@gcc -m64 -ffreestanding -O2 -nostdlib -c $< -o $@
-
 # Compile assembly source files
 build/arch/$(arch)/%.o: src/arch/$(arch)/%.asm
 	@mkdir -p $(shell dirname $@)
 	@nasm -felf64 $< -o $@
 
+# Compile C source files
+build/arch/$(arch)/%.o: src/arch/$(arch)/%.c
+	@mkdir -p $(shell dirname $@)
+	@$(CC) $(CFLAGS) -c $< -o $@

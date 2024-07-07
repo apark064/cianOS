@@ -5,7 +5,7 @@ SECTIONS {
 
     .multiboot2_header : {
         KEEP(*(.multiboot2_header))
-    }
+    } 
 
     .text : {
         *(.text)
@@ -13,6 +13,10 @@ SECTIONS {
 
     .data : {
         *(.data)
+    }
+
+    .rodata : {
+        *(.rodata)
     }
 
     .bss : {
